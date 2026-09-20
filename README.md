@@ -48,8 +48,3 @@ na pasta `outputs/`, e mostrar as métricas finais de cada configuração.
 | Combinado (Dropout+Momentum) | 0.4918 | 0.7013 | 0.5588 | 0.046 |
 
 Baseline escolhido pela busca empírica: arquitetura `(64,64)`, `lr=0.1`.
-
-## Relatório
-
-A análise completa (metodologia, gráficos e discussão dos resultados) está no
-relatório em anexo (`relatorio_projeto1_mlp.docx`).
