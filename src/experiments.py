@@ -5,11 +5,13 @@ Ponto único que roda todo o estudo:
 
   1) busca empírica do baseline (arquitetura + lr, SGD puro)
   2) treino final do baseline escolhido
-  3) os 4 estudos de ablação (dropout, L2, L1, momentum), cada um mudando
+  3) busca do melhor valor de cada hiperparâmetro de ablação, usando o
+     erro de VALIDAÇÃO (o teste nunca entra nessa escolha)
+  4) os 4 estudos de ablação (dropout, L2, L1, momentum), cada um mudando
      SÓ um hiperparâmetro em cima da MESMA arquitetura do baseline
-  4) modelo combinado, juntando os componentes que isoladamente ajudaram
-  5) resumo em texto com as métricas de todas as configurações
-  6) gráficos: curva do baseline, baseline x cada ablação, validação de
+  5) modelo combinado, juntando os componentes que isoladamente ajudaram
+  6) resumo em texto com as métricas de todas as configurações
+  7) gráficos: curva do baseline, baseline x cada ablação, validação de
      todas as configurações sobrepostas, comparação final em barras,
      parity plot e resíduos do melhor modelo
 
@@ -43,17 +45,14 @@ LEARNING_RATES = [0.1, 0.05, 0.01]
 EPOCHS = 3000
 BATCH_SIZE = 8
 
-# um hiperparâmetro por ablação, escolha foi feito manualmente testando cada um isoladamente, 
-# e pegando o que melhorou o R2 no teste.
-ABLATIONS = {
-    "dropout": dict(dropout_p=0.3),
-    "l2": dict(weight_decay=1e-5),
-    "l1": dict(l1_lambda=1e-6),
-    "momentum": dict(momentum=0.7),
+# candidatos testados para cada ablação: o valor final é escolhido pelo
+# menor erro de VALIDAÇÃO (nunca o teste), dentro dessa pequena grade
+ABLATION_GRID = {
+    "dropout": ("dropout_p", [0.1, 0.3, 0.5]),
+    "l2": ("weight_decay", [1e-6, 1e-5, 1e-4]),
+    "l1": ("l1_lambda", [1e-7, 1e-6, 1e-5]),
+    "momentum": ("momentum", [0.5, 0.7, 0.9]),
 }
-
-# modelo combinado: dropout + momentum, que foram os dois que melhoraram o R2 no teste
-COMBINED = dict(dropout_p=0.3, momentum=0.7)
 
 
 def search_baseline(data):
@@ -83,14 +82,14 @@ def search_baseline(data):
             print(f"arq={str(hidden_sizes):12s} lr={lr:<5} n_params={n_params:4d} "
                   f"| val_final={results[-1]['final_val_mse']:.4f} best_val={results[-1]['best_val_mse']:.4f}")
 
-       # salva a busca inteira em CSV
+    # salva a busca inteira em CSV
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(f"{OUT_DIR}/baseline_search_log.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(results[0].keys()))
         writer.writeheader()
         writer.writerows(results)
-        
-     # escolhe a combinação com o menor erro de validação -> vira o baseline oficial
+
+    # escolhe a combinação com o menor erro de validação -> vira o baseline oficial
     best = min(results, key=lambda r: r["best_val_mse"])
     print("\n>>> Baseline escolhido:", best)
     return best
@@ -114,13 +113,29 @@ def train_config(data, hidden_sizes, lr, **train_kwargs):
     return model, history
 
 
+def search_ablation_hparam(data, hidden_sizes, lr, name, param, values):
+    """Testa os valores candidatos de UM hiperparâmetro de ablação e escolhe
+    o de menor erro de VALIDAÇÃO. O teste não entra nessa escolha, só é
+    usado depois, uma única vez, para avaliar a configuração já decidida."""
+    results = []
+    for v in values:
+        _, history = train_config(data, hidden_sizes, lr, **{param: v})
+        best_val_mse = min(history["val_loss"])
+        results.append({"value": v, "best_val_mse": best_val_mse})
+        print(f"  {name}: {param}={v} | best_val_mse={best_val_mse:.4f}")
+
+    best = min(results, key=lambda r: r["best_val_mse"])
+    print(f">>> {name}: melhor {param} = {best['value']} (val_mse={best['best_val_mse']:.4f})")
+    return results, best["value"]
+
+
 def main():
     data = prepare_data(DATA_CSV)
     x_test, y_test = data["test"]
 
     # 1) busca empírica + baseline final
     best = search_baseline(data)
-    hidden_sizes = eval(best["hidden_sizes"])  
+    hidden_sizes = eval(best["hidden_sizes"])
     lr = best["lr"]
 
     baseline_model, baseline_history = train_config(data, hidden_sizes, lr)
@@ -134,7 +149,24 @@ def main():
     all_models = {"baseline": baseline_model}
     all_histories = {"baseline": baseline_history}
 
-    # 2) os 4 estudos de ablação, cada um comparado ao baseline
+    # 2) busca do melhor valor de cada hiperparâmetro de ablação, por validação
+    print("\n=== Busca dos hiperparâmetros de ablação (por erro de validação) ===")
+    ABLATIONS = {}
+    ablation_search_rows = []
+    for name, (param, values) in ABLATION_GRID.items():
+        results, best_value = search_ablation_hparam(data, hidden_sizes, lr, name, param, values)
+        ABLATIONS[name] = {param: best_value}
+        for r in results:
+            ablation_search_rows.append({"ablation": name, "param": param, **r})
+
+    # salva essa busca também em CSV, junto com a do baseline
+    with open(f"{OUT_DIR}/ablation_search_log.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(ablation_search_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(ablation_search_rows)
+
+    # 3) os 4 estudos de ablação, cada um comparado ao baseline, já com o
+    # hiperparâmetro escolhido no passo anterior
     for name, kwargs in ABLATIONS.items():
         model, history = train_config(data, hidden_sizes, lr, **kwargs)
         all_metrics[name] = regression_metrics(model, x_test, y_test)
@@ -147,8 +179,12 @@ def main():
             f"{OUT_DIR}/ablation_{name}.png",
         )
 
-    # 3) modelo combinado
-    combined_model, combined_history = train_config(data, hidden_sizes, lr, **dict(COMBINED))
+    # 4) modelo combinado, usando os valores de dropout e momentum já escolhidos
+    combined_kwargs = dict(
+        dropout_p=ABLATIONS["dropout"]["dropout_p"],
+        momentum=ABLATIONS["momentum"]["momentum"],
+    )
+    combined_model, combined_history = train_config(data, hidden_sizes, lr, **combined_kwargs)
     all_metrics["combinado"] = regression_metrics(combined_model, x_test, y_test)
     all_models["combinado"] = combined_model
     all_histories["combinado"] = combined_history
@@ -159,26 +195,26 @@ def main():
         f"{OUT_DIR}/combined_model.png",
     )
 
-    # 4) resumo em texto
+    # 5) resumo em texto
     print("\n=== Métricas no conjunto de TESTE (todas as configurações) ===")
     for name, m in all_metrics.items():
         print(f"\n{name}:")
         print(format_metrics(m))
 
-    # 5) gráfico de comparação final (barras)
+    # 6) gráfico de comparação final (barras)
     names = list(all_metrics.keys())
     r2_values = [all_metrics[n]["r2"] for n in names]
     mse_values = [all_metrics[n]["mse"] for n in names]
     plot_comparison(names, r2_values, mse_values, f"{OUT_DIR}/comparacao_final.png")
 
-    # 6) validação de todas as configurações sobrepostas (Figura 2 do template)
+    # 7) validação de todas as configurações sobrepostas (Figura 2 do template)
     plot_val_comparison(
         all_histories,
         "Comparação de convergência na validação",
         f"{OUT_DIR}/val_comparison.png",
     )
 
-    # 7) descobre o melhor modelo (maior R2 no teste) e gera parity plot + resíduos
+    # 8) descobre o melhor modelo (maior R2 no teste) e gera parity plot + resíduos
     best_name = max(all_metrics, key=lambda n: all_metrics[n]["r2"])
     best_model = all_models[best_name]
     print(f"\n>>> Melhor modelo (maior R2 no teste): {best_name}")

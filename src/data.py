@@ -84,7 +84,7 @@ def prepare_data(csv_path: str, train_frac=0.1, val_frac=0.1, seed=42):
     """
     set_seed(seed)
     x, y = load_dataset(csv_path)
-    splits = split_dataset(x, y, train_frac, val_frac, seed) '''embaralha e separa esses 300 pontos em 3 grupos: 30 pra treino, 30 pra validação, 240 pra teste'''
+    splits = split_dataset(x, y, train_frac, val_frac, seed) #embaralha e separa esses 300 pontos em 3 grupos: 30 pra treino, 30 pra validação, 240 pra teste
 
     x_train, y_train = splits["train"]
     x_val, y_val = splits["val"]
